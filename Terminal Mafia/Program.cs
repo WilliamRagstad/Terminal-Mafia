@@ -27,7 +27,7 @@ namespace Terminal_Mafia
   /           /                |       ||       ||   |___ |   | |       |
  /           /                 |       ||       ||    ___||   | |       |
  \----------/                  | ||_|| ||   _   ||   |    |   | |   _   |  _
-                               |_|   |_||__| |__||___|    |___| |__| |__| |_|ENBOM";
+                               |_|   |_||__| |__||___|    |___| |__| |__| |_|";
         static void Main(string[]? args)
         {
             Console.WriteLine(TitleStripes, ConsoleColor.DarkYellow);
