@@ -19,6 +19,23 @@ namespace TMServer.Game.Action
                 }
                 return CommandResult.Error($"Could not find player {target}!");
             });
+        public static CommandMafia List = new CommandMafia(new string[0], "List players", (actor, players, args) =>
+        {
+            string list = "The current players are ";
+            bool first = true;
+            bool otherPlayers = false;
+            foreach (var player in players)
+            {
+                if (player == actor) continue;
+                otherPlayers = true;
+                if (!first) list += ", ";
+                list += player.Name;
+                first = false;
+            }
+            if (otherPlayers) list += " and ";
+            list += "You.";
+            return CommandResult.Message(list);
+        });
         public static CommandMafia Help = new CommandMafia(new string[0], "Help page", (actor, players , args)=> CommandResult.Message(GetHelp()));
 
         #endregion
@@ -41,6 +58,7 @@ namespace TMServer.Game.Action
             {
                 case "kill": return CommandRequire(Kill, parts, argsLength, "Kill", 1, out result, out args, out error);
                 case "help": return CommandRequire(Help, parts, argsLength, "Help", 0, out result, out args, out error);
+                case "list": return CommandRequire(List, parts, argsLength, "List", 0, out result, out args, out error);
                 default:
                     result = null;
                     args = new object[0];
