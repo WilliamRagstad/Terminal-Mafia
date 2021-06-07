@@ -76,7 +76,7 @@ namespace Terminal_Mafia
             WaitForAction();
             WaitForStory(); // Other players wake up
 
-            // GameLoop(); // Restart game loop
+            GameLoop(); // Restart game loop
         }
 
         private void WaitForNewRole()
