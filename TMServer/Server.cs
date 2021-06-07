@@ -23,11 +23,13 @@ namespace TMServer
         private List<Player> _players;
         private readonly Rules _rules;
         
-        private List<Client> _mafia => Map(_players, p => p.Role == Role.Mafia, p => p.Client);
-        private List<Client> _police => Map(_players, p => p.Role == Role.Police, p => p.Client);
-        private List<Client> _detectives => Map(_players, p => p.Role == Role.Detective, p => p.Client);
-        private List<Client> _doctors => Map(_players, p => p.Role == Role.Doctor, p => p.Client);
-        private List<Client> _villagers => Map(_players, p => p.Role == Role.Villager, p => p.Client);
+        private List<Client> GetRoles(Role role) => Map(_players, p => p.Role == role, p => p.Client);
+        private List<Client> Mafia => GetRoles(Role.Mafia);
+        private List<Client> Police => GetRoles(Role.Police);
+        private List<Client> Detectives => GetRoles(Role.Detective);
+        private List<Client> Doctors => GetRoles(Role.Doctor);
+        private List<Client> Villagers => GetRoles(Role.Villager);
+
         public Server(string name, int players, Rules rules)
         {
             _name = name;
@@ -112,6 +114,7 @@ namespace TMServer
             Client c = TcpToClient(client);
             Log($"{c.PlayerName} left the lobby!", ConsoleColor.DarkYellow);
             _clients.Remove(c);
+            _players.RemoveAll(p => p.Client == c);
         }
 
         #region Connection Helper Functions
@@ -170,14 +173,38 @@ namespace TMServer
         {
             SCodec.Broadcast(_clients, new TMProtocol.Server.GameStart(GetPlayerNames(), GetRulesArray()), RequestType.GameStart, HandleClientError);
             AssignRoles();
-            SCodec.Broadcast(_clients, new Message(Prologue.Get(_mafia.Count)), RequestType.Story, HandleClientError);
+            SCodec.Broadcast(_clients, new Message(Prologue.Get(Mafia.Count)), RequestType.Story, HandleClientError);
 
             GameState state;
             while (true)
             {
-                MafiaWakesUp();
+                SCodec.Broadcast(_clients.FindAll(c => !c.Equals(Mafia.First())), new Message("You will wake up soon..."), RequestType.Story, HandleClientError);
+                // MafiaWakesUp();
+                WakeUpRole(Role.Mafia, Mafia, Game.Story.Night.Mafia.Get(Mafia.Count), (player, action) => {
+                    bool commandExecuted = false;
+                    if (CommandMafia.TryParse(action.Command, out CommandMafia cmd, out object[] args, out string error))
+                    { 
+                        CommandResult result = cmd.Invoke(ClientToPlayer(player), _players, args);
+                        switch (result.Status)
+                        {
+                            case CommandStatus.Info:
+                                SCodec.Send(player, new Message(result.Result), RequestType.ActionInfo, HandleClientError);
+                                break;
+                            case CommandStatus.Successful:
+                                SCodec.Send(player, new Message(result.Result), RequestType.ActionSuccess, HandleClientError);
+                                commandExecuted = true; // Successfully executed all player command actions.
+                                Log(player.PlayerName + ", " + result.Result);
+                                break;
+                            case CommandStatus.Error:
+                                SCodec.Send(player, new Message(result.ErrorMessage), RequestType.ActionError, HandleClientError);
+                                break;
+                        }
+                    }
+                    else SCodec.Send(player, new Message(error), RequestType.ActionError, HandleClientError);
+                    return commandExecuted;
+                });
             }
-            SCodec.Broadcast(_clients, new Message(Epilogue.Get(state, _mafia.Count)), RequestType.GameEnd, HandleClientError);
+            SCodec.Broadcast(_clients, new Message(Epilogue.Get(state, Mafia.Count)), RequestType.GameEnd, HandleClientError);
         }
          
         private void AssignRoles()
@@ -211,21 +238,68 @@ namespace TMServer
             }
         }
 
-        private void MafiaWakesUp()
+        private void WakeUpRole(Role role, List<Client> roleClients, string[] nightStory, Func<Client, TMProtocol.Client.Action, bool> actionHandler)
         {
-            if (_mafia.Count > 0)
+            if (roleClients.Count > 0)
             {
-                Log("Mafia wakes up.");
-                SCodec.Broadcast(_clients, new Message(Game.Story.Night.Mafia.Get(_mafia.Count)), RequestType.Story, HandleClientError);
-                SCodec.Broadcast(_clients.FindAll(c => !c.Equals(_mafia.First())), new Message("You will wake up soon..."), RequestType.Story, HandleClientError);
-                foreach (Client player in _mafia)
+                Log(role + "wakes up.");
+                SCodec.Broadcast(_clients, new Message(nightStory), RequestType.Story, HandleClientError);
+                foreach (Client player in roleClients)
                 {
                     Log("Waiting for " + player.PlayerName + " to take action.");
                     bool commandExecuted = false;
                     while (!commandExecuted)
                     {
                         SCodec.Send(player, new Message("You have woken up!"), RequestType.Action, HandleClientError);
-                        RequestType request = Codec.Receive(player.Socket, out string data);
+                        RequestType request;
+                        string data;
+                        try
+                        {
+                            request = Codec.Receive(player.Socket, out data);
+                        }
+                        catch (Exception e)
+                        {
+                            HandleClientError(player.Socket);
+                            break;
+                        }
+                        switch (request)
+                        {
+                            case RequestType.Action:
+                                commandExecuted = actionHandler(player, Codec.Convert<TMProtocol.Client.Action>(data));
+                                break;
+                            default:
+                                Log(request + " was unexpected at this time?", ConsoleColor.Yellow);
+                                break;
+                        }
+                    }
+                }
+            }
+        }
+        private void MafiaWakesUp()
+        {
+            if (Mafia.Count > 0)
+            {
+                Log("Mafia wakes up.");
+                SCodec.Broadcast(_clients, new Message(Game.Story.Night.Mafia.Get(Mafia.Count)), RequestType.Story, HandleClientError);
+                SCodec.Broadcast(_clients.FindAll(c => !c.Equals(Mafia.First())), new Message("You will wake up soon..."), RequestType.Story, HandleClientError);
+                foreach (Client player in Mafia)
+                {
+                    Log("Waiting for " + player.PlayerName + " to take action.");
+                    bool commandExecuted = false;
+                    while (!commandExecuted)
+                    {
+                        SCodec.Send(player, new Message("You have woken up!"), RequestType.Action, HandleClientError);
+                        RequestType request;
+                        string data;
+                        try
+                        {
+                            request = Codec.Receive(player.Socket, out data);
+                        }
+                        catch (Exception e)
+                        {
+                            HandleClientError(player.Socket);
+                            break;
+                        }
                         switch (request)
                         {
                             case RequestType.Action:
