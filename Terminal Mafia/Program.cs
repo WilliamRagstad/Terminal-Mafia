@@ -1,115 +1,60 @@
-﻿#nullable enable
-using System;
-using System.IO;
-using System.Linq;
-using System.Net;
 using System.Net.Sockets;
-using System.Threading;
+using TMGame;
 using TMProtocol;
-using TMProtocol.Shared;
-using Console = EzConsole.EzConsole;
 
-namespace Terminal_Mafia
+if (args.Length is < 2 or > 3 || args.Contains("--help"))
 {
-    class Program
+    Console.WriteLine("Terminal Mafia <host> <name> [port=8209]");
+    return;
+}
+try
+{
+    using var socket = new TcpClient();
+    await socket.ConnectAsync(args[0], args.Length == 3 ? int.Parse(args[2]) : Codec.StandardPort);
+    var stream = socket.GetStream();
+    await Codec.WriteAsync(stream, new Request(Command: "join", Name: args[1]));
+    View? state = null;
+    int? id = null;
+    var shownReports = new HashSet<string>();
+    Console.WriteLine("Commands: start, kill <id>, block <id>, protect <id>, investigate <id>, vote <id>, restart, quit. Discuss with friends before voting.");
+    var receive = Task.Run(async () =>
     {
-        private static readonly string TitleStripes = @"=======================================================================================================================";
-        private static readonly string Title = @"         ___=======___________________________,   _______  _______  ______    __   __  ___   __    _  _______  ___     
-     ___/  ////////  \____/                   |  |       ||       ||    _ |  |  |_|  ||   | |  |  | ||   _   ||   |
-    /__ |_//[//]//             -------------- |  |_     _||    ___||   | ||  |       ||   | |   |_| ||  |_|  ||   |
-    \   |////////_____________________________|    |   |  |   |___ |   |_||_ |       ||   | |       ||       ||   |
-     \                 *****        |________|     |   |  |    ___||    __  ||       ||   | |  _    ||       ||   |___
-      |       ______________________|              |   |  |   |___ |   |  | || ||_|| ||   | | | |   ||   _   ||       |
-      /           /  ||   //                       |___|  |_______||___|  |_||_|   |_||___| |_|  |__||__| |__||_______|
-     /           /____\__//     __   __  _______  _______  ___   _______ 
-    /           /~~~~~~~~~     |  |_|  ||   _   ||       ||   | |   _   |
-   /           /               |       ||  |_|  ||    ___||   | |  |_|  |
-  /           /                |       ||       ||   |___ |   | |       |
- /           /                 |       ||       ||    ___||   | |       |
- \----------/                  | ||_|| ||   _   ||   |    |   | |   _   |  _
-                               |_|   |_||__| |__||___|    |___| |__| |__| |_|";
-        static void Main(string[]? args)
+        while (true)
         {
-            Console.WriteLine(TitleStripes, ConsoleColor.DarkYellow);
-            Console.WriteLine(Title, ConsoleColor.Yellow);
-            Console.WriteLine(TitleStripes, ConsoleColor.DarkYellow);
-            Console.WriteLine();
-            
-            LogBlock("Welcome to Terminal Mafia,\n");
-            LogBlock("A game about finding out who are lying or to kill all others before they do.\n\n");
-
-            string name = Console.ReadInput("Name");
-            Console.WriteLine("Enter a server IP address/hostname to join a game!");
-            JoinServer(name);
+            var response = await Codec.ReadAsync<Response>(stream);
+            if (response.Type == "joined") { id = response.Id; Console.WriteLine($"Joined as #{id}."); }
+            if (response.Message != null) Console.WriteLine(response.Message);
+            if (response.State is not { } view) continue;
+            Volatile.Write(ref state, view);
+            var settings = view.Settings;
+            Console.WriteLine($"{settings.Name} | Seats: {view.Players.Length}/{settings.Players} | Mafia: {settings.Mafia}, Police: {settings.Police}, Doctors: {settings.Doctors}, Detectives: {settings.Detectives}, Villagers: {settings.Villagers}");
+            if (view.Phase == Phase.Lobby) shownReports.Clear();
+            if (view.MafiaPartners.Length > 0) Console.WriteLine("Your Mafia teammates: " + string.Join(", ", view.MafiaPartners.Select(partner => "#" + partner)));
+            foreach (var report in view.PrivateReports) if (shownReports.Add(report)) Console.WriteLine(report);
+            Console.WriteLine($"\n{view.Phase} | Your role: {view.YourRole?.ToString() ?? "unassigned"} | Host: #{view.Host} | Winner: {view.Winner ?? "none"}");
+            foreach (var p in view.Players) Console.WriteLine($"  #{p.Id} {p.Name}: {(p.Alive ? "alive" : "eliminated")}{(p.Connected ? "" : " (disconnected)")}");
+            Console.WriteLine(view.CanAct ? "Your action: " + (view.Action + " <id>") : "Waiting / spectating.");
+            if (id == view.Host && view.Phase is Phase.Lobby or Phase.Finished)
+                Console.WriteLine(view.Phase == Phase.Lobby ? "When full, enter start." : "Enter restart to reopen the lobby.");
         }
-
-        private static void JoinServer(string playerName)
-        {
-            Server server;
-            #region Connection loop
-            while (true)
-            {
-                string serverAddress = Console.ReadInput("Server");
-                TcpClient socket;
-                try
-                {
-                    socket = new TcpClient(serverAddress, TMProtocol.Codec.StandardPort);
-                }
-                catch
-                {
-                    Console.WriteLine("Server does not exist.", ConsoleColor.Red);
-                    continue;
-                }
-                Console.WriteLine("Connecting...", ConsoleColor.Yellow);
-
-                TMProtocol.Server.CConnect connect;
-                try
-                {
-                    connect = Codec.Exchange<TMProtocol.Server.CConnect>(socket,
-                        new TMProtocol.Client.Connect(playerName), RequestType.Connect, RequestType.Connect);
-                }
-                catch (IOException)
-                {
-                    Console.WriteLine("Server did not respond, maybe it is busy playing a game already?", ConsoleColor.Red);
-                    continue;
-                }
-                catch (InvalidDataException e)
-                {
-                    Console.WriteLine("Server did not understand request: " + e.Message, ConsoleColor.Red);
-                    continue;
-                }
-
-                if (connect.Accepted)
-                {
-                    Console.Clear();
-                    Console.Write(connect.ServerName + ": ");
-                    Console.WriteLine(connect.Message, ConsoleColor.Green);
-                    server = new Server(socket, connect.ServerName);
-                    break; // Successfully connected to server
-                }
-                // Else, connection was not accepted.
-                Console.WriteLine(connect.Message, ConsoleColor.Red);
-            }
-            #endregion
-
-            new GameClient(playerName, server).Start();
-        }
-
-        public static void HandleGameStop()
-        {
-            Console.WriteLine("Goodbye!");
-            Thread.Sleep(1000);
-        }
-        public static void HandleServerClosed(GameClient game)
-        {
-            Main(null);
-        }
-
-        private static void LogBlock(string message) => LogBlock(message, ConsoleColor.Gray);
-        private static void LogBlock(string message, ConsoleColor color)
-        {
-            Console.Write("\t|| ", ConsoleColor.Yellow);
-            Console.Write(message, color);
-        }
+    });
+    while (true)
+    {
+        // Network events remain visible while the player is at the input prompt.
+        var input = Task.Run(Console.ReadLine);
+        if (await Task.WhenAny(input, receive) == receive) { await receive; break; }
+        string? line = await input;
+        if (line == null || line.Trim() == "quit") break;
+        var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) continue;
+        int? target = parts.Length == 2 && int.TryParse(parts[1], out int parsed) ? parsed : null;
+        if (parts.Length > 2 || parts[0] is not ("start" or "restart" or "kill" or "vote" or "block" or "protect" or "investigate"))
+        { Console.WriteLine("Use start, kill <id>, block <id>, protect <id>, investigate <id>, vote <id>, restart, or quit."); continue; }
+        await Codec.WriteAsync(stream, new Request(Command: parts[0], Target: target, Revision: Volatile.Read(ref state)?.Revision ?? -1));
     }
+}
+catch (Exception e) when (e is IOException or InvalidDataException or SocketException or FormatException or OverflowException or ArgumentException)
+{
+    Console.Error.WriteLine("Connection closed or failed: " + e.Message);
+    Environment.ExitCode = 1;
 }
