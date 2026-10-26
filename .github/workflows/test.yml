@@ -1,0 +1,23 @@
+name: Build and play
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: dotnet build "Terminal Mafia.sln" -c Release
+      - run: dotnet run --project TMTests -c Release --no-build
+      - run: python3 tests/playthrough.py
+      - run: dotnet publish TMServer -c Release -o artifacts/server
+      - run: dotnet publish "Terminal Mafia" -c Release -o artifacts/client
+      - run: python3 tests/playthrough.py
+        env:
+          MAFIA_SERVER: artifacts/server/TMServer.dll
+          MAFIA_CLIENT: artifacts/client/Terminal Mafia.dll

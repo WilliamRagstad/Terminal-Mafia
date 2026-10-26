@@ -4,8 +4,8 @@ using System.Text.Json.Serialization;
 using TMGame;
 
 namespace TMProtocol;
-public sealed record Request(int Version = 1, string? Command = null, string? Name = null, int? Target = null, int Revision = 0);
-public sealed record Response(string Type, int? Id = null, string? Message = null, View? State = null, int Version = 1);
+public sealed record Request(int Version = 2, string? Command = null, string? Name = null, int? Target = null, int Revision = 0);
+public sealed record Response(string Type, int? Id = null, string? Message = null, View? State = null, int Version = 2);
 
 public static class Codec
 {

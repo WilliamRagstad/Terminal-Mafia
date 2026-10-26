@@ -5,7 +5,7 @@ using TMGame;
 using TMProtocol;
 
 namespace TMServer;
-public sealed class Server(IPAddress address, int port, int players)
+public sealed class Server(IPAddress address, int port, GameSettings settings)
 {
     private sealed class Peer(TcpClient socket)
     {
@@ -18,14 +18,14 @@ public sealed class Server(IPAddress address, int port, int players)
             if (!Outbox.Writer.TryWrite(response)) Socket.Dispose();
         }
     }
-    private readonly Game game = new(players);
+    private readonly Game game = new(settings);
     private readonly object gate = new();
     private readonly HashSet<Peer> peers = [];
     public async Task RunAsync(CancellationToken cancellation)
     {
         var listener = new TcpListener(address, port);
         listener.Start();
-        Console.WriteLine($"Listening on {listener.LocalEndpoint}; {players} players, one Mafia.");
+        Console.WriteLine($"Listening on {listener.LocalEndpoint}; {settings.Name}: {settings.Players} players, {settings.Mafia} Mafia, {settings.Police} Police, {settings.Doctors} Doctors, {settings.Detectives} Detectives, {settings.Villagers} Villagers.");
         var tasks = new HashSet<Task>();
         try
         {
@@ -63,8 +63,8 @@ public sealed class Server(IPAddress address, int port, int players)
                 var request = await Codec.ReadAsync<Request>(peer.Stream, handshake.Token);
                 lock (gate)
                 {
-                    if (request.Version != 1 || request.Command != "join")
-                        throw new InvalidOperationException("First command must be a version 1 join.");
+                    if (request.Version != 2 || request.Command != "join")
+                        throw new InvalidOperationException("First command must be a version 2 join.");
                     peer.Id = game.Join(request.Name);
                     peers.Add(peer);
                     peer.Send(new Response("joined", peer.Id));
@@ -77,7 +77,7 @@ public sealed class Server(IPAddress address, int port, int players)
                     {
                         try
                         {
-                            if (request.Version != 1) throw new InvalidOperationException("Unsupported protocol version.");
+                            if (request.Version != 2) throw new InvalidOperationException("Unsupported protocol version.");
                             game.Act(peer.Id.Value, request.Command, request.Target, request.Revision);
                             peer.Send(new Response("ok"));
                             Broadcast();
@@ -87,7 +87,7 @@ public sealed class Server(IPAddress address, int port, int players)
                 }
             }
             catch (InvalidOperationException e) { peer.Send(new Response("error", Message: e.Message)); }
-            catch (Exception e) when (e is IOException or SocketException or OperationCanceledException or System.Text.Json.JsonException or ObjectDisposedException) { }
+            catch (Exception e) when (e is IOException or InvalidDataException or SocketException or OperationCanceledException or System.Text.Json.JsonException or ObjectDisposedException) { }
             finally
             {
                 lock (gate)
@@ -110,7 +110,7 @@ public sealed class Server(IPAddress address, int port, int players)
                 await Codec.WriteAsync(peer.Stream, response, deadline.Token);
             }
         }
-        catch (Exception e) when (e is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
+        catch (Exception e) when (e is IOException or InvalidDataException or SocketException or OperationCanceledException or ObjectDisposedException)
         { peer.Socket.Dispose(); }
     }
 }

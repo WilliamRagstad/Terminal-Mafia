@@ -15,7 +15,8 @@ try
     await Codec.WriteAsync(stream, new Request(Command: "join", Name: args[1]));
     View? state = null;
     int? id = null;
-    Console.WriteLine("Commands: start, kill <id>, vote <id>, restart, quit. Discuss with friends before voting.");
+    var shownReports = new HashSet<string>();
+    Console.WriteLine("Commands: start, kill <id>, block <id>, protect <id>, investigate <id>, vote <id>, restart, quit. Discuss with friends before voting.");
     var receive = Task.Run(async () =>
     {
         while (true)
@@ -25,9 +26,14 @@ try
             if (response.Message != null) Console.WriteLine(response.Message);
             if (response.State is not { } view) continue;
             Volatile.Write(ref state, view);
+            var settings = view.Settings;
+            Console.WriteLine($"{settings.Name} | Seats: {view.Players.Length}/{settings.Players} | Mafia: {settings.Mafia}, Police: {settings.Police}, Doctors: {settings.Doctors}, Detectives: {settings.Detectives}, Villagers: {settings.Villagers}");
+            if (view.Phase == Phase.Lobby) shownReports.Clear();
+            if (view.MafiaPartners.Length > 0) Console.WriteLine("Your Mafia teammates: " + string.Join(", ", view.MafiaPartners.Select(partner => "#" + partner)));
+            foreach (var report in view.PrivateReports) if (shownReports.Add(report)) Console.WriteLine(report);
             Console.WriteLine($"\n{view.Phase} | Your role: {view.YourRole?.ToString() ?? "unassigned"} | Host: #{view.Host} | Winner: {view.Winner ?? "none"}");
             foreach (var p in view.Players) Console.WriteLine($"  #{p.Id} {p.Name}: {(p.Alive ? "alive" : "eliminated")}{(p.Connected ? "" : " (disconnected)")}");
-            Console.WriteLine(view.CanAct ? "Your action: " + (view.Phase == Phase.Night ? "kill <id>" : "vote <id>") : "Waiting / spectating.");
+            Console.WriteLine(view.CanAct ? "Your action: " + (view.Action + " <id>") : "Waiting / spectating.");
             if (id == view.Host && view.Phase is Phase.Lobby or Phase.Finished)
                 Console.WriteLine(view.Phase == Phase.Lobby ? "When full, enter start." : "Enter restart to reopen the lobby.");
         }
@@ -42,12 +48,12 @@ try
         var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0) continue;
         int? target = parts.Length == 2 && int.TryParse(parts[1], out int parsed) ? parsed : null;
-        if (parts.Length > 2 || parts[0] is not ("start" or "restart" or "kill" or "vote"))
-        { Console.WriteLine("Use start, kill <id>, vote <id>, restart, or quit."); continue; }
+        if (parts.Length > 2 || parts[0] is not ("start" or "restart" or "kill" or "vote" or "block" or "protect" or "investigate"))
+        { Console.WriteLine("Use start, kill <id>, block <id>, protect <id>, investigate <id>, vote <id>, restart, or quit."); continue; }
         await Codec.WriteAsync(stream, new Request(Command: parts[0], Target: target, Revision: Volatile.Read(ref state)?.Revision ?? -1));
     }
 }
-catch (Exception e) when (e is IOException or SocketException or FormatException or OverflowException or ArgumentException)
+catch (Exception e) when (e is IOException or InvalidDataException or SocketException or FormatException or OverflowException or ArgumentException)
 {
     Console.Error.WriteLine("Connection closed or failed: " + e.Message);
     Environment.ExitCode = 1;

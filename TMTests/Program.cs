@@ -52,4 +52,37 @@ foreach (bool townWins in new[] { true, false })
     Reject(() => g.Act(host, "start", null, g.Revision));
     int next = g.Join("Next"); g.Disconnect(host); Check(g.Host == next);
 }
-Console.WriteLine("State machine tests passed.");
+{
+    // A 2–2 day tie kills nobody, then stale night commands cannot cross rounds.
+    var (g, ids, mafia) = Started();
+    g.Act(mafia, "kill", ids.First(i => i != mafia), g.Revision);
+    var alive = g.ViewFor(mafia).Players.Where(p => p.Alive).Select(p => p.Id).ToArray();
+    int rev = g.Revision;
+    g.Act(alive[0], "vote", alive[1], rev);
+    Reject(() => g.Act(alive[0], "vote", alive[2], rev));
+    g.Act(alive[1], "vote", alive[0], rev);
+    g.Act(alive[2], "vote", alive[0], rev);
+    g.Act(alive[3], "vote", alive[1], rev);
+    Check(g.Phase == Phase.Night && g.ViewFor(mafia).Players.Count(p => p.Alive) == 4);
+    Reject(() => g.Act(mafia, "kill", alive.First(i => i != mafia), rev - 1));
+}
+{
+    // Disconnecting a vote target releases affected voters and re-evaluates quorum.
+    var (g, ids, mafia) = Started(6);
+    g.Act(mafia, "kill", ids.First(i => i != mafia), g.Revision);
+    var town = g.ViewFor(mafia).Players.Where(p => p.Alive && p.Id != mafia).Select(p => p.Id).ToArray();
+    g.Act(town[0], "vote", town[1], g.Revision);
+    g.Disconnect(town[1]);
+    Check(g.ViewFor(town[0]).CanAct);
+    int rev = g.Revision;
+    foreach (var p in g.ViewFor(mafia).Players.Where(p => p.Alive))
+        g.Act(p.Id, "vote", p.Id == mafia ? town[0] : mafia, rev);
+    Check(g.Winner == "Villagers");
+}
+{
+    var (g, ids, mafia) = Started(3);
+    g.Disconnect(ids.First(i => i != mafia));
+    Check(g.Winner == "Mafia");
+}
+ConfigurationTests.Run();
+Console.WriteLine("State machine and hosting configuration tests passed.");
