@@ -87,7 +87,7 @@ public sealed class Server(IPAddress address, int port, GameSettings settings)
                 }
             }
             catch (InvalidOperationException e) { peer.Send(new Response("error", Message: e.Message)); }
-            catch (Exception e) when (e is IOException or SocketException or OperationCanceledException or System.Text.Json.JsonException or ObjectDisposedException) { }
+            catch (Exception e) when (e is IOException or InvalidDataException or SocketException or OperationCanceledException or System.Text.Json.JsonException or ObjectDisposedException) { }
             finally
             {
                 lock (gate)
@@ -110,7 +110,7 @@ public sealed class Server(IPAddress address, int port, GameSettings settings)
                 await Codec.WriteAsync(peer.Stream, response, deadline.Token);
             }
         }
-        catch (Exception e) when (e is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
+        catch (Exception e) when (e is IOException or InvalidDataException or SocketException or OperationCanceledException or ObjectDisposedException)
         { peer.Socket.Dispose(); }
     }
 }

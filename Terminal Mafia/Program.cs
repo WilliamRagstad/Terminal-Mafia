@@ -53,7 +53,7 @@ try
         await Codec.WriteAsync(stream, new Request(Command: parts[0], Target: target, Revision: Volatile.Read(ref state)?.Revision ?? -1));
     }
 }
-catch (Exception e) when (e is IOException or SocketException or FormatException or OverflowException or ArgumentException)
+catch (Exception e) when (e is IOException or InvalidDataException or SocketException or FormatException or OverflowException or ArgumentException)
 {
     Console.Error.WriteLine("Connection closed or failed: " + e.Message);
     Environment.ExitCode = 1;
