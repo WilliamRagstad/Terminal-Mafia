@@ -1,23 +1,15 @@
-using System.Net;
-using TMProtocol;
 using TMServer;
 
-if (args.Contains("--help"))
-{
-    Console.WriteLine("TMServer [players=5] [port=8209] [bind-address=127.0.0.1]");
-    return;
-}
+if (args.Contains("--help")) { Console.WriteLine(HostOptions.Usage); return; }
 try
 {
-    int players = args.Length > 0 ? int.Parse(args[0]) : 5;
-    int port = args.Length > 1 ? int.Parse(args[1]) : Codec.StandardPort;
-    var address = args.Length > 2 ? IPAddress.Parse(args[2]) : IPAddress.Loopback;
+    var options = HostOptions.Parse(args, Console.In, Console.Out);
     using var stop = new CancellationTokenSource();
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
-    await new Server(address, port, players).RunAsync(stop.Token);
+    await new Server(options.Address, options.Port, options.Game).RunAsync(stop.Token);
 }
-catch (Exception e) when (e is ArgumentException or FormatException or OverflowException or System.Net.Sockets.SocketException)
+catch (Exception e) when (e is ArgumentException or FormatException or OverflowException or IOException or System.Net.Sockets.SocketException)
 {
-    Console.Error.WriteLine(e.Message + "\nUsage: TMServer [players=5] [port=8209] [bind-address=127.0.0.1]");
+    Console.Error.WriteLine(e.Message + "\n" + HostOptions.Usage);
     Environment.ExitCode = 1;
 }

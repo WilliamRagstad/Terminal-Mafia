@@ -1,10 +1,11 @@
 namespace TMGame;
 
 public enum Phase { Lobby, Night, Day, Finished }
-public enum Role { Villager, Mafia }
+public enum Role { Villager, Mafia, Police, Doctor, Detective }
 public sealed record PlayerView(int Id, string Name, bool Alive, bool Connected);
 public sealed record View(Phase Phase, int Revision, int? Host, string? Winner,
-    PlayerView[] Players, Role? YourRole, bool CanAct);
+    PlayerView[] Players, Role? YourRole, bool CanAct, GameSettings Settings,
+    string? Action, int[] MafiaPartners, string[] PrivateReports);
 
 // Pure state machine. The transport serializes all access and supplies connection identity.
 public sealed class Game
@@ -15,20 +16,22 @@ public sealed class Game
         public string Name = name;
         public bool Alive = true, Connected = true;
         public Role Role;
+        public List<string> Reports = [];
     }
     private readonly List<Player> players = [];
     private readonly Dictionary<int, int> votes = [];
     private readonly Random random;
     private int nextId;
-    public int Capacity { get; }
+    public GameSettings Settings { get; }
+    public int Capacity => Settings.Players;
     public Phase Phase { get; private set; }
     public int Revision { get; private set; }
     public string? Winner { get; private set; }
     public int? Host => players.FirstOrDefault(p => p.Connected)?.Id;
-    public Game(int capacity, Random? random = null)
+    public Game(int capacity, Random? random = null) : this(GameSettings.Default(capacity), random) { }
+    public Game(GameSettings settings, Random? random = null)
     {
-        if (capacity is < 3 or > 16) throw new ArgumentException("Players must be 3–16.");
-        Capacity = capacity;
+        Settings = settings.Validate();
         this.random = random ?? Random.Shared;
     }
     private static void Require(bool condition, string message)
@@ -52,7 +55,11 @@ public sealed class Game
             players.Select(p => new PlayerView(p.Id, p.Name, p.Alive, p.Connected)).ToArray(),
             Phase == Phase.Lobby ? null : self.Role,
             self.Connected && self.Alive && !votes.ContainsKey(id) &&
-            (Phase == Phase.Day || Phase == Phase.Night && self.Role == Role.Mafia));
+            (Phase == Phase.Day || Phase == Phase.Night && self.Role != Role.Villager),
+            Settings, Phase == Phase.Day ? "vote" : Phase == Phase.Night ? NightCommand(self.Role) : null,
+            Phase != Phase.Lobby && self.Role == Role.Mafia
+                ? players.Where(p => p.Role == Role.Mafia && p.Id != id).Select(p => p.Id).ToArray() : [],
+            self.Reports.ToArray());
     }
     public void Act(int id, string? command, int? target, int revision)
     {
@@ -63,8 +70,13 @@ public sealed class Game
         {
             Require(id == Host && Phase == Phase.Lobby, "Only the host can start from the lobby.");
             Require(players.Count == Capacity, "Wait for the configured number of players.");
-            foreach (var p in players) p.Role = Role.Villager;
-            players[random.Next(players.Count)].Role = Role.Mafia;
+            var roles = Enumerable.Repeat(Role.Mafia, Settings.Mafia)
+                .Concat(Enumerable.Repeat(Role.Police, Settings.Police))
+                .Concat(Enumerable.Repeat(Role.Doctor, Settings.Doctors))
+                .Concat(Enumerable.Repeat(Role.Detective, Settings.Detectives))
+                .Concat(Enumerable.Repeat(Role.Villager, Settings.Villagers)).ToArray();
+            random.Shuffle(roles);
+            for (int i = 0; i < players.Count; i++) players[i].Role = roles[i];
             Advance(Phase.Night);
             return;
         }
@@ -75,10 +87,12 @@ public sealed class Game
             return;
         }
         Require(actor!.Alive, "Eliminated players cannot act.");
-        Require(command == "kill" && Phase == Phase.Night && actor.Role == Role.Mafia ||
+        Require(command != null && command == NightCommand(actor.Role) && Phase == Phase.Night ||
                 command == "vote" && Phase == Phase.Day, "Invalid or out-of-turn action.");
         Require(!votes.ContainsKey(id), "Already acted this phase.");
-        Require(players.Any(p => p.Id == target && p.Alive && p.Connected && p.Id != id), "Choose another living player.");
+        var victim = players.SingleOrDefault(p => p.Id == target && p.Alive && p.Connected);
+        Require(victim != null && (victim.Id != id || Phase == Phase.Night && actor.Role == Role.Doctor), "Choose another living player (Doctors may protect themselves).");
+        Require(!(Phase == Phase.Night && actor.Role == Role.Mafia && victim!.Role == Role.Mafia), "Mafia cannot target their teammates.");
         votes.Add(id, target!.Value);
         Resolve();
     }
@@ -97,19 +111,47 @@ public sealed class Game
             if (!CheckWin()) Resolve();
         }
     }
+    private static string? NightCommand(Role role) => role switch
+    {
+        Role.Mafia => "kill", Role.Police => "block", Role.Doctor => "protect",
+        Role.Detective => "investigate", _ => null
+    };
+    private static int? Plurality(IEnumerable<int> choices)
+    {
+        var tally = choices.GroupBy(id => id).OrderByDescending(g => g.Count()).ToArray();
+        return tally.Length > 0 && (tally.Length == 1 || tally[0].Count() > tally[1].Count()) ? tally[0].Key : null;
+    }
     private void Resolve()
     {
-        var required = players.Where(p => p.Alive && (Phase == Phase.Day || p.Role == Role.Mafia)).ToArray();
+        var required = players.Where(p => p.Alive && (Phase == Phase.Day || p.Role != Role.Villager)).ToArray();
         if (!required.All(p => votes.ContainsKey(p.Id))) return;
-        var tally = votes.Values.GroupBy(id => id).OrderByDescending(g => g.Count()).ToArray();
-        if (tally.Length > 0 && (tally.Length == 1 || tally[0].Count() > tally[1].Count()))
-            players.Single(p => p.Id == tally[0].Key).Alive = false;
+        int? victim;
+        if (Phase == Phase.Day) victim = Plurality(votes.Values);
+        else
+        {
+            // Police orders resolve simultaneously, then other unblocked actions.
+            var blocked = required.Where(p => p.Role == Role.Police).Select(p => votes[p.Id]).ToHashSet();
+            var active = required.Where(p => !blocked.Contains(p.Id)).ToArray();
+            var protectedIds = active.Where(p => p.Role == Role.Doctor).Select(p => votes[p.Id]).ToHashSet();
+            victim = Plurality(active.Where(p => p.Role == Role.Mafia).Select(p => votes[p.Id]));
+            if (victim.HasValue && protectedIds.Contains(victim.Value)) victim = null;
+            foreach (var detective in required.Where(p => p.Role == Role.Detective))
+            {
+                var target = players.Single(p => p.Id == votes[detective.Id]);
+                detective.Reports.Add(blocked.Contains(detective.Id)
+                    ? $"Night revision {Revision}: investigation blocked."
+                    : $"Night revision {Revision}: #{target.Id} {target.Name} is {(target.Role == Role.Mafia ? "Mafia" : "not Mafia")}.");
+                // Keep snapshots bounded even in a long game with no eliminations.
+                if (detective.Reports.Count > 16) detective.Reports.RemoveAt(0);
+            }
+        }
+        if (victim.HasValue) players.Single(p => p.Id == victim.Value).Alive = false;
         if (!CheckWin()) Advance(Phase == Phase.Night ? Phase.Day : Phase.Night);
     }
     private bool CheckWin()
     {
         int mafia = players.Count(p => p.Alive && p.Role == Role.Mafia);
-        int town = players.Count(p => p.Alive && p.Role == Role.Villager);
+        int town = players.Count(p => p.Alive && p.Role != Role.Mafia);
         Winner = mafia == 0 ? "Villagers" : mafia >= town ? "Mafia" : null;
         if (Winner == null) return false;
         Advance(Phase.Finished);
@@ -119,7 +161,7 @@ public sealed class Game
     private void Reset()
     {
         players.RemoveAll(p => !p.Connected);
-        foreach (var p in players) { p.Alive = true; p.Role = Role.Villager; }
+        foreach (var p in players) { p.Alive = true; p.Role = Role.Villager; p.Reports.Clear(); }
         Winner = null;
         Advance(Phase.Lobby);
     }

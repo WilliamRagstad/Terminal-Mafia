@@ -2,10 +2,10 @@
 
 # Terminal Mafia
 
-A playable terminal party game for **3–16 players**: one Mafia, everyone else
-Villagers. The server owns roles, phases, votes, elimination and victory.
+A playable terminal party game for **3–16 players**, with configurable counts of
+Mafia, Police, Doctors, Detectives and Villagers. The server owns roles, phases, votes, elimination and victory.
 See [rules and disconnect behavior](docs/RULES.md) and [protocol](docs/PROTOCOL.md).
-The prototype's special roles and wire format are no longer supported.
+Hosting supports the original role-count controls; the wire format is version 2.
 
 ## Clean install
 
@@ -22,7 +22,29 @@ No third-party NuGet packages or external services are required.
 
 ## Host and join
 
-On the host, start a five-player local game:
+For the original-style hosting setup, launch without arguments:
+
+```sh
+dotnet run --project TMServer -c Release --no-build
+```
+
+The setup prompts for server name, players, Mafia, Police, Doctors, Detectives,
+Villagers, port and bind address. Enter accepts the shown default; invalid input
+is retried. Role counts must total the player count, with at least one Mafia and
+fewer Mafia than non-Mafia. Use `0.0.0.0` as the bind address for LAN hosting.
+Settings are shown to joining players and survive in-game restart.
+
+For scripted hosting, the same controls are available as options:
+
+```sh
+dotnet run --project TMServer -c Release --no-build -- --name "Friday Mafia" --players 8 --mafia 2 --police 1 --doctors 1 --detectives 1 --villagers 3 --port 8209 --bind 0.0.0.0
+```
+
+Omit `--villagers` to fill the remaining seats automatically. Special roles
+otherwise default to zero and Mafia defaults to one. `--help` lists all options.
+
+The earlier positional command still starts a five-player local game with one
+Mafia and four Villagers:
 
 ```sh
 dotnet run --project TMServer -c Release --no-build -- 5 8209 127.0.0.1
@@ -49,12 +71,16 @@ The first joined player is host. Enter `start` when full. Each client displays
 its private role, public player IDs, current phase, and available action:
 
 - Mafia at night: `kill 2` targets living player #2.
+- Police at night: `block 2` prevents that player's non-Police night action.
+- Doctors at night: `protect 2` prevents a Mafia kill; self-protection is allowed.
+- Detectives at night: `investigate 2` privately checks Mafia affiliation.
 - Living players by day: discuss in person or voice chat, then `vote 2`.
 - After victory, the host enters `restart`; refill empty seats, then `start`.
 - `quit` or closing the client disconnects. During play this eliminates you.
 
-Day votes are final; a unique plurality is eliminated, a tie kills nobody.
-Villagers win when the Mafia dies; Mafia wins at parity. Dead players spectate.
+Multiple Mafia vote for one nightly victim (ties kill nobody); all special-role
+actions resolve together. See [full role rules](docs/RULES.md). Day votes are final; a unique plurality is eliminated, a tie kills nobody.
+The town wins when all Mafia die; Mafia wins at parity with all non-Mafia roles. Dead players spectate.
 There are no timers: each required player must act or disconnect. If the host
 leaves, the oldest connected player becomes host. Ctrl+C stops the server;
 relaunching it starts a fresh lobby and players must reconnect.
