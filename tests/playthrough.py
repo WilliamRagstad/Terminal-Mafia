@@ -25,7 +25,7 @@ class Client:
         self.state = self.until(lambda p: p['type'] == 'state')['state']
 
     def send(self, **packet):
-        data = json.dumps(dict(version=1, **packet)).encode()
+        data = json.dumps(dict(version=2, **packet)).encode()
         self.sock.sendall(struct.pack('!I', len(data)) + data)
 
     def read(self):
@@ -67,9 +67,12 @@ class Client:
         self.sock.close()
 
 class Hosting:
+    def __init__(self, args=None):
+        self.args = args or ['5', '0']
+
     def __enter__(self):
         # Let the OS pick a port; parse the actual bound endpoint from server stdout.
-        self.process = subprocess.Popen([DOTNET, str(SERVER), '5', '0'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.process = subprocess.Popen([DOTNET, str(SERVER), *self.args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         line = self.process.stdout.readline()
         assert line.startswith('Listening on '), line
         self.port = int(line.split(';')[0].rsplit(':', 1)[1])
@@ -141,7 +144,91 @@ def play(clients, town_wins):
         assert all(p['alive'] for p in client.state['players'])
 
 
+def configured_game():
+    with Hosting(['--name', 'Friday Mafia', '--players', '8', '--mafia', '2',
+                  '--police', '1', '--doctors', '1', '--detectives', '1', '--port', '0']) as h:
+        clients = [h.join('Custom' + str(i)) for i in range(8)]
+        clients[0].act('start')
+        sync(clients, 1)
+        by_role = {}
+        for c in clients:
+            by_role.setdefault(c.state['yourRole'], []).append(c)
+            assert c.state['settings'] == dict(name='Friday Mafia', players=8, mafia=2, police=1, doctors=1, detectives=1, villagers=3)
+        assert {role: len(group) for role, group in by_role.items()} == dict(Mafia=2, Police=1, Doctor=1, Detective=1, Villager=3)
+        mafia = by_role['Mafia']
+        doctor, = by_role['Doctor']
+        police, = by_role['Police']
+        detective, = by_role['Detective']
+        victim = by_role['Villager'][0]
+        for c in clients:
+            assert c.state['mafiaPartners'] == ([m.id for m in mafia if m != c] if c in mafia else [])
+        for c in mafia:
+            c.act('kill', victim.id)
+        police.act('block', mafia[0].id)
+        doctor.act('protect', victim.id)
+        detective.act('investigate', mafia[0].id)
+        sync(clients, 2)
+        assert all(p['alive'] for p in clients[0].state['players'])
+        for c in clients:
+            if c == detective:
+                assert 'is Mafia' in c.state['privateReports'][0]
+            else:
+                assert c.state['privateReports'] == []
+        # Play through a town victory against both Mafia, with a protected second night.
+        for c in clients:
+            c.act('vote', victim.id if c == mafia[0] else mafia[0].id)
+        sync(clients, 3)
+        assert clients[0].state['winner'] is None
+        mafia[1].act('kill', victim.id)
+        doctor.act('protect', victim.id)
+        police.act('block', mafia[1].id)
+        detective.act('investigate', mafia[1].id)
+        sync(clients, 4)
+        for c in clients:
+            if c != mafia[0]:
+                c.act('vote', victim.id if c == mafia[1] else mafia[1].id)
+        sync(clients, 5)
+        assert all(c.state['winner'] == 'Villagers' for c in clients)
+        clients[0].act('restart')
+        sync(clients, 6)
+        assert all(c.state['privateReports'] == [] and c.state['mafiaPartners'] == [] for c in clients)
+        clients[0].act('start')
+        sync(clients, 7)
+        assert sum(c.state['yourRole'] == 'Mafia' for c in clients) == 2
+        print('PASS: custom settings, all special roles, multiple Mafia, private investigations, configured restart')
+
+
+def interactive_setup():
+    process = subprocess.Popen([DOTNET, str(SERVER), '--setup'], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        process.stdin.write('Setup Game\n5\n1\n0\n1\n1\n2\n0\n127.0.0.1\n')
+        process.stdin.flush()
+        for _ in range(10):
+            line = process.stdout.readline()
+            if 'Listening on ' in line:
+                port = int(line.split(';')[0].rsplit(':', 1)[1])
+                break
+        else:
+            raise AssertionError('Interactive setup did not start hosting')
+        client = Client(port, 'SetupPlayer')
+        assert client.state['settings'] == dict(name='Setup Game', players=5, mafia=1, police=0, doctors=1, detectives=1, villagers=2)
+        client.close()
+        process.send_signal(signal.SIGINT)
+        _, errors = process.communicate(timeout=8)
+        assert process.returncode == 0, errors
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    bad = subprocess.run([DOTNET, str(SERVER), '--players', '5', '--mafia', '3'], capture_output=True, text=True, timeout=5)
+    assert bad.returncode == 1 and 'fewer than half' in bad.stderr
+    print('PASS: interactive hosting starts with configured settings; invalid configuration fails')
+
+
 def main():
+    interactive_setup()
+    configured_game()
     with Hosting() as h:
         clients = [h.join('Player' + str(i)) for i in range(5)]
         play(clients, True)
@@ -173,7 +260,7 @@ def main():
         deadline = time.monotonic() + 3
         while True:
             probe = socket.create_connection(('127.0.0.1', h.port), timeout=3)
-            data = json.dumps({'version': 1, 'command': 'join', 'name': 'Fresh'}).encode()
+            data = json.dumps({'version': 2, 'command': 'join', 'name': 'Fresh'}).encode()
             probe.sendall(struct.pack('!I', len(data)) + data)
             reader = Client.__new__(Client)
             reader.sock, reader.history = probe, []
@@ -202,7 +289,7 @@ def main():
     with Hosting() as h:
         # Fragmented header/body; coalesced requests; malformed lengths and JSON.
         s = socket.create_connection(('127.0.0.1', h.port), timeout=3)
-        data = json.dumps({'version': 1, 'command': 'join', 'name': 'Split'}).encode()
+        data = json.dumps({'version': 2, 'command': 'join', 'name': 'Split'}).encode()
         frame = struct.pack('!I', len(data)) + data
         for byte in frame:
             s.sendall(bytes([byte]))
@@ -210,7 +297,7 @@ def main():
         c.sock, c.history = s, []
         assert c.read()['type'] == 'joined'
         assert c.read()['type'] == 'state'
-        data = json.dumps({'version': 1, 'command': 'kill', 'target': 1}).encode()
+        data = json.dumps({'version': 2, 'command': 'kill', 'target': 1}).encode()
         frame = struct.pack('!I', len(data)) + data
         s.sendall(frame * 2)
         assert c.read()['type'] == 'error' and c.read()['type'] == 'error'

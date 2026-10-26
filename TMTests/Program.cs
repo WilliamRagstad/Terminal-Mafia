@@ -84,4 +84,5 @@ foreach (bool townWins in new[] { true, false })
     g.Disconnect(ids.First(i => i != mafia));
     Check(g.Winner == "Mafia");
 }
-Console.WriteLine("State machine tests passed.");
+ConfigurationTests.Run();
+Console.WriteLine("State machine and hosting configuration tests passed.");
